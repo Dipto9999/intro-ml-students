@@ -3,368 +3,152 @@
 #######################
 
 import pandas as pd
-import numpy as np
-
 import altair as alt
-
 from IPython.display import display
 
-##################
-### Clean Data ###
-##################
+####################
+### Score Models ###
+####################
 
 
-def get_totalgross_value(total_gross):
-    if total_gross != total_gross:
-        return total_gross
-
-    return float(total_gross.replace("$", "").replace(",", ""))
-
-
-def get_release_decade(release_year):
-    return (release_year // 10) * 10
-
-
-def capitalize_label(label):
-    return " ".join(
-        word.capitalize()
-        for word in label.split("_")
-        if word not in ["to", "a", "an", "the", "of"]
-    )
-
-
-def ranked_df(effective_df, feature):
+def get_scores_chart(scores_df, scoring, fig_number, baseline_model="Dummy Classifier"):
     """
-    Returns a dataframe with the number of films for each value of a feature
-    sorted in descending order.
+    Returns a histogram chart of a dataframe feature
 
     Parameters
     ----------
-    effective_df : pandas.core.frame.DataFrame
-        The dataframe to filter, must contain
-        the columns :
-            'movie_title', feature
-    feature : str
-        The feature to filter on
+    scores_df: pandas.core.frame.DataFrame
+        the dataframe with models and their scoring data
+    scoring: str, optional
+        the baseline model
+    scoring: str
+        the column to score on
+    fig_number: int
+        the figure number to display in the chart title
+    baseline_model :
+        the baseline model for comparing test scores and metrics
 
     Returns
     -------
-    pandas.DataFrame
-        the ordered dataframe
+    next_number : int
+        the next figure number to display in the chart_title
+
+    Displays
+    -------
+    altair.vegalite.v3.api.Chart
+        an Altair histogram
 
     Examples
     --------
-    >>> ranked_df(releases_df, 'genre')
+    >>> get_scores_chart(
+            scores_df = scores_df,
+            scoring = 'precision',
+            fig_number = fig_number
+        )
     """
 
-    return (
-        effective_df.groupby(feature)["movie_title"]
-        .agg("count")
-        .reset_index()
-        .rename(columns={"movie_title": "number_of_films"})
-        .sort_values(by="number_of_films", ascending=False)
+    if type(scores_df) != pd.DataFrame:
+        raise TypeError("scores_df must be a pandas.core.frame.DataFrame object.")
+    if "model" not in scores_df.columns.to_list():
+        raise ValueError("scores_df must contain a column for the models being scored.")
+    if len(scores_df.where(scores_df["model"] == baseline_model).dropna()) != 1:
+        raise ValueError(f"""{baseline_model} must be found in the 'model' column.""")
+
+    # Check if Scoring String is Found Within DataFrame Columns.
+    found = False
+    for col in scores_df.columns.to_list():
+        if col.find(scoring) != -1:
+            found = True
+    if not found:
+        raise ValueError(
+            "The scoring_col must be a substring within the dataframe columns."
+        )
+
+    # Melt DataFrame for Plotting Scores.
+    plot_df = pd.melt(
+        frame=scores_df,
+        id_vars="model",
+        var_name="score_type",
+        value_name="score",
+        value_vars=scores_df.columns.to_list().remove("model"),
+    )
+
+    # Assign the DataFrame to the Effective Score Type.
+    plot_df = (
+        plot_df[plot_df["score_type"].str.find(scoring) != -1]
         .reset_index(drop=True)
+        .sort_values(by="score_type", ascending=True)
+    )
+    display(plot_df.head())
+
+    # Assign Labels.
+    score_label = " ".join([word.capitalize() for word in scoring.split("_")])
+    x_title = "Score" if scoring.find("time") == -1 else "Time (s)"
+
+    y_order = [baseline_model] + sorted(
+        [model for model in list(plot_df["model"].unique()) if model != baseline_model]
     )
 
-
-def add_rereleases(effective_df):
-    """
-    Given a dataframe of films, this function adds the box office revenue from
-    rereleased films to the original release. This function also sorts the dataframe by
-    release year and then by movie title, and resets the index of the dataframe.
-
-    Parameters
-    ----------
-    effective_df : pandas.core.frame.DataFrame
-        The dataframe to filter, must contain
-        the columns :
-            'movie_title', 'director', 'genre', 'MPAA_rating',
-            'release_year', 'total_gross', and 'inflation_adjusted_gross'
-
-    Returns
-    -------
-    pandas.DataFrame
-        the cleaned dataframe
-
-    Examples
-    --------
-    >>> add_rereleases(releases_df)
-    """
-
-    # Let's Assume That These Movies are *Probably* Rereleases.
-    cleaned_df = effective_df.copy()
-    cleaned_df.drop_duplicates(
-        subset=["movie_title", "director", "genre", "MPAA_rating"],
-        keep="first",
-        inplace=True,
-    )
-
-    rerelease_df = effective_df[
-        effective_df.duplicated(
-            subset=["movie_title", "director", "genre", "MPAA_rating"]
+    # Create Altair Chart.
+    scores_chart = (
+        alt.Chart(
+            plot_df,
+            title=alt.TitleParams(
+                f"Figure {fig_number} : Model Performance - {score_label} Score",
+                fontSize=20,
+            ),
         )
-    ]
-
-    rereleased_projects = {
-        row["movie_title"]: [row["director"], row["genre"], row["MPAA_rating"]]
-        for i, row in rerelease_df.iterrows()
-    }
-
-    for movie, details in rereleased_projects.items():
-        # Find All Duplicate Entries Within DataFrame.
-        current_df = effective_df.query(f'movie_title == "{movie}"')
-        current_df = current_df.query(f'director == "{details[0]}"')
-        current_df = current_df.query(f'genre == "{details[1]}"')
-        current_df = current_df.query(f'MPAA_rating == "{details[2]}"')
-
-        total_sum = current_df.groupby(
-            ["movie_title", "director", "genre", "MPAA_rating"]
-        )["total_gross"].agg("sum")[0]
-        inflation_adjusted_sum = current_df.groupby(
-            ["movie_title", "director", "genre", "MPAA_rating"]
-        )["inflation_adjusted_gross"].agg("sum")[0]
-
-        cleaned_df.at[current_df.index[0], "total_gross"] = total_sum
-        cleaned_df.at[
-            current_df.index[0], "inflation_adjusted_gross"
-        ] = inflation_adjusted_sum
-
-    cleaned_df.sort_values(
-        by=["release_year", "movie_title"], ascending=[True, True], inplace=True
-    )
-    cleaned_df.reset_index(drop=True, inplace=True)
-
-    return cleaned_df
-
-
-def merge_on_actor(voice_actors_df, film_revenue_df, char_type):
-    """
-    Given a dataframe of voice actors and a dataframe of films, this function
-    merges the two dataframes on the character and the voice actor. This function
-    also squeezes rows with multiple voice actors for the same character.
-
-    Parameters
-    ----------
-    voice_actors_df : pandas.core.frame.DataFrame
-        The dataframe to filter, must contain the columns :
-        'character', 'voice-actor', 'movie_title', 'release_month', 'release_year'
-    film_revenue_df : pandas.core.frame.DataFrame
-        The dataframe to filter, must contain the columns :
-        'movie_title', 'release_month', 'release_year'
-    char_type : str
-        The type of character to filter on, must be either 'hero' or 'villain'
-
-    Returns
-    -------
-    pandas.DataFrame
-        the merged dataframe
-
-    Examples
-    --------
-    >>> merge_on_actor(voice_actors_df, releases_df, 'hero')
-    """
-
-    if char_type != "hero" and char_type != "villain":
-        raise ValueError("char_type must be either hero or villain")
-
-    effective_actors_df = voice_actors_df.rename(columns={"character": char_type})
-    effective_actors_df.rename(
-        columns={"voice-actor": f"{char_type}-actor"}, inplace=True
-    )
-
-    merged_chars_df = pd.merge(
-        film_revenue_df, effective_actors_df, on=["movie_title", char_type], how="left"
-    )
-
-    # Squeeze Rows with Multiple Voice-Actors For Same Character.
-
-    duplicated_df = merged_chars_df[
-        merged_chars_df.duplicated(
-            subset=["movie_title", "release_month", "release_year"]
-        )
-    ][["movie_title", "release_month", "release_year"]].drop_duplicates()
-
-    duplicated_indices = {}
-    for i, row in duplicated_df.iterrows():
-        movie_title = row["movie_title"]
-        release_year = row["release_year"]
-        release_month = row["release_month"]
-
-        effective_df = merged_chars_df.query(f'movie_title == "{movie_title}"')
-        effective_df = effective_df.query(f"release_year == {release_year}")
-        effective_df = effective_df.query(f"release_month == {release_month}")
-
-        effective_indices = effective_df.index.to_list()
-
-        duplicated_indices[effective_indices[0]] = effective_indices[1:]
-
-    actors_dict = {
-        i: merged_chars_df.loc[i, f"{char_type}-actor"]
-        for i in duplicated_indices.keys()
-    }
-    for keep, duplicates in duplicated_indices.items():
-        for i in duplicates:
-            actors_dict[keep] += f'; {merged_chars_df.loc[i, f"{char_type}-actor"]}'
-
-    for i, actors in actors_dict.items():
-        merged_chars_df.at[i, f"{char_type}-actor"] = actors
-    merged_chars_df.drop_duplicates(
-        subset=["movie_title", "release_year", "release_month"], inplace=True
-    )
-
-    return merged_chars_df
-
-
-def filter_duplicates(filter_df, search_df):
-    """
-    Given two dataframes, this function filters the first dataframe to remove
-    any duplicate rows in the second dataframe.
-
-    Parameters
-    ----------
-    filter_df : pandas.core.frame.DataFrame
-        The dataframe to filter, must contain the columns :
-        'movie_title', 'release_month', 'release_year'
-    search_df : pandas.core.frame.DataFrame
-        The dataframe to search, must contain the columns :
-        'movie_title', 'release_month', 'release_year'
-
-    Returns
-    -------
-    pandas.DataFrame
-        the filtered dataframe
-
-    Examples
-    --------
-    >>> filter_duplicates(filter_df, search_df)
-    """
-
-    if filter_df.columns.to_list() != search_df.columns.to_list():
-        raise Exception("The columns of the two dataframes are not the same.")
-
-    # Find the Duplicate Rows.
-    duplicate_df = pd.concat([filter_df, search_df]).sort_values(
-        by=["movie_title", "release_year", "release_month"]
-    )
-    duplicate_df = duplicate_df[
-        duplicate_df.duplicated(subset=["movie_title", "release_year", "release_month"])
-    ]
-
-    filtered_df = filter_df.copy()
-
-    # Find the Indices of the Duplicate Rows.
-    for i, row in duplicate_df.iterrows():
-        movie_title = row["movie_title"]
-        release_year = row["release_year"]
-        release_month = row["release_month"]
-
-        effective_df = filter_df.query(f'movie_title == "{movie_title}"')
-        effective_df = effective_df.query(f"release_year == {release_year}")
-        effective_df = effective_df.query(f"release_month == {release_month}")
-
-        filtered_df.drop(effective_df.index.to_list(), inplace=True)
-
-    return filtered_df
-
-
-######################
-### Plot Histogram ###
-######################
-
-
-def __get_histogram(
-    effective_df,
-    feature="inflation_adjusted_gross",
-    target="release_decade",
-    plot_title="Distribution",
-    maxbins=5,
-):
-    if maxbins > 0:
-        plot_bin = alt.Bin(maxbins=maxbins)
-    else:
-        plot_bin = None
-
-    y_label = capitalize_label(feature)
-
-    if plot_title == "Distribution":
-        plot_title += f": {y_label}"
-
-    # Drop Null Values From DataFrame.
-    if target in effective_df.columns:
-        plot_df = (
-            effective_df[effective_df[feature].notna() & effective_df[target].notna()]
-            .sort_values(by=feature, ascending=True)
-            .reset_index(drop=True)
-        )
-
-        plot_color = alt.Color(
-            f"{target}:N", legend=alt.Legend(title=f"{capitalize_label(target)}")
-        )
-        plot_height = 250
-    elif target == "count()":
-        plot_df = effective_df[effective_df[feature].notna()]
-
-        plot_y_axis = alt.Axis(title=y_label)
-        plot_color = alt.value("#0066CC")
-        plot_height = 400
-    else:
-        raise ValueError("Target not found in dataframe.")
-
-    plot_width = 550
-
-    if (effective_df[feature].dtypes == np.float64) or (
-        effective_df[feature].dtypes == np.int
-    ):
-        # Set the Exponent For the Y-Axis to Improve Histogram Readability.
-        exp = len(str(int(plot_df[plot_df[feature] != 0][feature].iloc[0]))) - 1
-        plot_df = plot_df.assign(
-            feature_display=plot_df[feature].apply(lambda x: float(x) / (10**exp))
-        )
-
-        if feature.lower().find("gross") != -1:
-            plot_y_axis = alt.Axis(title=f"{y_label} ($10^{exp})")
-        else:
-            plot_y_axis = alt.Axis(title=f"{y_label} (10^{exp})")
-    else:
-        plot_df = plot_df.assign(feature_display=plot_df[feature])
-        plot_y_axis = alt.Axis(title=y_label)
-
-    # Create Histogram.
-    histogram = (
-        alt.Chart(plot_df)
-        .mark_bar(opacity=0.7)
+        .mark_bar(opacity=0.75)
         .encode(
-            x=alt.X("count()", stack=True),
-            y=alt.Y(f"feature_display:N", bin=plot_bin, axis=plot_y_axis),
-            color=plot_color,
+            x=alt.X(
+                "score:Q",
+                title=x_title,
+                scale=alt.Scale(
+                    domain=[
+                        plot_df.score.min() - 0.025,
+                        min(1.0, plot_df.score.max() + 0.025),
+                    ]
+                ),
+                stack=False,
+            ),
+            y=alt.Y("model:N", title="Model", sort=y_order),
+            color=alt.Color(
+                "score_type:N",
+                legend=alt.Legend(
+                    title="Score Type", titleFontSize=14, labelFontSize=12
+                ),
+            ),
+            tooltip=[alt.Tooltip("score:Q", title="Score")],
         )
-        .properties(title=plot_title, width=plot_width, height=plot_height)
+        .properties(height=200, width=500)
+        .configure_axis(labelFontSize=15, titleFontSize=20)
     )
 
-    return histogram
+    # Display Scores Chart
+    display(scores_chart)
+
+    next_number = fig_number + 1
+
+    return next_number
 
 
-def display_histogram(
-    effective_df,
-    feature="inflation_adjusted_gross",
-    target="release_decade",
-    plot_title="Distribution",
-    maxbins=5,
-):
+#########################################
+### Feature Value Distribution Charts ###
+#########################################
+
+
+def get_numeric_chart(plot_df, feature, fig_number, num_bins=25):
     """
-    Plots a histogram of a dataframe feature
+    Returns a histogram chart of a dataframe feature
 
     Parameters
     ----------
-    effective_df: pandas.core.frame.DataFrame
+    plot_df: pandas.core.frame.DataFrame
         the dataframe to plot
-    feature: str, optional
+    feature: str
         the feature name
-    target: str, optional
-        the target name
-
-    plot_title: str, optional
-        the plot title
+    fig_number: int
+        the figure number to display in the chart title
     maxbins: int, optional
         the maximum number of data bins on the y-axis
 
@@ -372,118 +156,188 @@ def display_histogram(
     -------
     altair.vegalite.v3.api.Chart
         an Altair histogram
+
+    Examples
+    --------
+    >>> get_numeric_chart(
+            plot_df = X_train,
+            feature = 'MoisturePercent',
+            fig_number = 4
+        )
     """
 
-    return (
-        __get_histogram(
-            effective_df,
-            feature=feature,
-            target=target,
-            plot_title=plot_title,
-            maxbins=maxbins,
+    if type(plot_df) != pd.DataFrame:
+        raise TypeError("plot_df must be a pandas.core.frame.DataFrame object.")
+    if feature not in plot_df.columns.to_list():
+        raise ValueError("The feature must be within the dataframe columns.")
+    if feature not in plot_df.describe(include=["int64", "float64"]).T.index.to_list():
+        raise TypeError("The column must include a numeric feature.")
+
+    plot_df = plot_df.copy()
+
+    # Check if Binary Feature.
+    if len(plot_df[feature].unique()) != 2:
+        bin = alt.Bin(maxbins=num_bins)
+        x_shorthand = f"{feature}:Q"
+    else:
+        plot_df[feature] = plot_df[feature].map({0: False, 1: True})
+
+        bin = False
+        x_shorthand = f"{feature}:N"
+
+    # Create Altair Chart.
+    numeric_chart = (
+        alt.Chart(
+            plot_df,
+            title=alt.TitleParams(
+                f"Figure {fig_number} : {feature} Feature Value Distributions",
+                fontSize=20,
+            ),
         )
-        .configure_axis(labelFontSize=10, titleFontSize=15)
-        .configure_title(fontSize=24)
+        .mark_bar()
+        .encode(
+            x=alt.X(x_shorthand, bin=bin, title=f"{feature} Values"),
+            y=alt.Y("count():Q", title="Number of Records"),
+            tooltip=[alt.Tooltip("count():Q", title="Number of Records")],
+        )
+        .properties(height=300, width=400)
+        .configure_axis(labelFontSize=12.5, titleFontSize=15)
     )
 
-
-##############################
-### Concatenate Histograms ###
-##############################
+    return numeric_chart
 
 
-def display_concat_histograms(
-    effective_df,
-    feature="inflation_adjusted_gross",
-    target="release_decade",
-    category_title="Grossing Films",
-    maxbins=5,
-    record_count=10,
-):
+def get_categorical_chart(plot_df, feature, fig_number, sort_order=None):
     """
-    Plots a concatenated histogram of a dataframe feature
+    Returns a bar chart of a dataframe feature
+
+    Parameters
+    ----------
+    plot_df: pandas.core.frame.DataFrame
+        the dataframe to plot
+    feature: str
+        the feature name
+    fig_number: int
+        the figure number to display in the chart title
+    sort_order : list, optional
+        the order to sort the feature values in the chart
+
+    Returns
+    -------
+    altair.vegalite.v3.api.Chart
+        an Altair histogram
+
+    Examples
+    --------
+    >>> get_categorical_chart(
+            plot_df = X_train,
+            feature = 'ManufacturingTypeEn',
+            fig_number = 5
+        )
+    """
+
+    if type(plot_df) != pd.DataFrame:
+        raise TypeError("plot_df must be a pandas.core.frame.DataFrame object.")
+    if feature not in plot_df.columns.to_list():
+        raise ValueError("The feature must be within the dataframe columns.")
+    if feature not in plot_df.describe(include="object").T.index.to_list():
+        raise TypeError("The column must include a categorical feature.")
+
+    sort = sort_order if sort_order else "x"
+
+    # Create Altair Chart.
+    categorical_chart = (
+        alt.Chart(
+            plot_df,
+            title=alt.TitleParams(
+                f"Figure {fig_number} : {feature} Feature Value Distributions",
+                fontSize=20,
+            ),
+        )
+        .mark_bar()
+        .encode(
+            alt.X("count():Q", title="Number of Records"),
+            alt.Y(f"{feature}:N", sort=sort),
+            tooltip=[alt.Tooltip("count():Q", title="Number of Records")],
+        )
+        .properties(height=300, width=250)
+        .configure_axis(labelFontSize=12.5, titleFontSize=15)
+    )
+
+    return categorical_chart
+
+
+################################
+### Describe Dataset Feature ###
+################################
+
+
+def describe_features(effective_df, features, fig_number, sort_by=None):
+    """
+    Prints distinct values for each feature in a list of dataframe features
 
     Parameters
     ----------
     effective_df: pandas.core.frame.DataFrame
         the dataframe to plot
-    feature: str, optional
-        the feature name
-    target: str, optional
-        the target name
-    category_title: str, optional
-        the category title
-    maxbins: int, optional
-        the maximum number of data bins on the y-axis
-    record_count: int, optional
-        the number of records to plot
+    features: list
+        list of feature names
+    fig_number: int
+        the figure number to display in the chart title
+    sort_order : list, optional
+        the order to sort the feature values in the chart
 
     Returns
     -------
+    next_number : int
+        the next figure number to display in the chart_title
+
+    Displays
+    -------
     altair.vegalite.v3.api.Chart
-        an Altair concatenated histogram
+        an Altair histogram
+
     """
 
-    if len(effective_df) < record_count:
-        raise ValueError(
-            "Record count must be less than the number of records in the dataframe."
+    if type(effective_df) != pd.DataFrame:
+        raise TypeError("effective_df must be a pandas.core.frame.DataFrame object.")
+
+    for feature in features:
+        print(
+            f"""The distinct values in the {feature} column are : \n{list(effective_df[feature].unique())}"""
         )
 
-    # Drop Null Values From DataFrame.
-    if target in effective_df.columns:
-        plot_df = effective_df[
-            effective_df[feature].notna() & effective_df[target].notna()
-        ].sort_values(by=feature, ascending=True)
-    elif target == "count()":
-        plot_df = effective_df[effective_df[feature].notna()].sort_values(
-            by=feature, ascending=True
-        )
-    else:
-        raise ValueError("Target not found in dataframe.")
+        if (
+            feature
+            in effective_df.describe(include=["int64", "float64"]).T.index.to_list()
+        ):
+            plot_df = effective_df.copy().fillna(0)
+            feature_chart = get_numeric_chart(
+                plot_df=plot_df,
+                feature=feature,
+                fig_number=fig_number + features.index(feature),
+            )
 
-    plot_df.reset_index(drop=True, inplace=True)
+        elif feature in effective_df.describe(include="object").T.index.to_list():
+            plot_df = effective_df.copy().fillna("nan")
+            sort_order = (
+                sort_by
+                if (sort_by in ["x", "-x"])
+                else sorted(list(plot_df[feature].unique()))
+            )
 
-    if len(plot_df) < record_count:
-        plot_count = int(len(plot_df) / 2)
-    else:
-        plot_count = record_count
+            feature_chart = get_categorical_chart(
+                plot_df=plot_df,
+                feature=feature,
+                fig_number=fig_number + features.index(feature),
+                sort_order=sort_order,
+            )
+        else:
+            raise ValueError("The feature must be within the dataframe columns.")
 
-    # Separate the Lowest and Highest Grossing Films.
-    lowest_df = plot_df.head(plot_count)
+        # Display Feature Chart
+        display(feature_chart)
 
-    highest_df = filter_duplicates(
-        filter_df=plot_df.tail(plot_count), search_df=lowest_df
-    )
+    next_number = fig_number + len(features)
 
-    # Display the Lowest and Highest Grossing Films in a DataFrame.
-    print("Lowest Grossing Films:")
-    display(lowest_df)
-    print("\n")
-    print("Highest Grossing Films:")
-    display(highest_df)
-
-    # Get Histograms.
-    lowest_histogram = __get_histogram(
-        effective_df=lowest_df,
-        feature=feature,
-        target=target,
-        plot_title=f"Lowest {category_title} : Distribution",
-        maxbins=maxbins,
-    )
-
-    highest_histogram = __get_histogram(
-        effective_df=highest_df,
-        feature=feature,
-        target=target,
-        plot_title=f"Highest {category_title} : Distribution",
-        maxbins=maxbins,
-    )
-
-    # Concatenate Histograms.
-    histogram = (
-        alt.concat(highest_histogram, lowest_histogram, columns=1)
-        .configure_axis(labelFontSize=10, titleFontSize=15)
-        .configure_title(fontSize=24)
-    )
-
-    return histogram
+    return next_number
